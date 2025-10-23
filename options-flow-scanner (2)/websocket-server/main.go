@@ -10,6 +10,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -108,6 +109,12 @@ func main() {
 	// Initialize Redis
 	initRedis()
 	
+	// Initialize TimescaleDB
+	if err := InitDatabase(); err != nil {
+		log.Printf("⚠️  TimescaleDB initialization failed: %v (continuing without database)", err)
+	}
+	defer CloseDatabase()
+	
 	// Initialize Polygon client
 	initPolygon()
 
@@ -121,6 +128,13 @@ func main() {
 	http.HandleFunc("/ws", handleWebSocket)
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/stats", handleStats)
+	
+	// REST API routes for dashboard
+	http.HandleFunc("/api/portfolio/summary", handlePortfolioSummary)
+	http.HandleFunc("/api/watchlist", handleWatchlist)
+	http.HandleFunc("/api/market/pulse", handleMarketPulse)
+	http.HandleFunc("/api/portfolio/snapshot", handlePortfolioSnapshot)
+	http.HandleFunc("/api/opportunities/today", handleTodaysOpportunities)
 
 	// Start server
 	port := getEnv("PORT", "8080")
@@ -138,11 +152,11 @@ func main() {
 // ================================================
 
 func initRedis() {
-	redisURL := getEnv("REDIS_URL", "localhost:6379")
+	redisHost := getEnv("REDIS_HOST", "localhost:6379")
 	redisPassword := getEnv("REDIS_PASSWORD", "")
 
 	redisClient = redis.NewClient(&redis.Options{
-		Addr:         redisURL,
+		Addr:         redisHost,
 		Password:     redisPassword,
 		DB:           0,
 		PoolSize:     100,
@@ -605,10 +619,29 @@ func handlePolygonMessage(pm PolygonMessage) {
 	// Transform Polygon message to our format
 	msg := TransformPolygonMessage(pm)
 	
+	// Write to TimescaleDB (async, non-blocking)
+	go func() {
+		if db != nil {
+			writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			
+			// Write trade data to TimescaleDB
+			if pm.EventType == "T" && pm.Symbol != "" && pm.Price > 0 {
+				// Convert exchange ID to string
+				exchangeStr := fmt.Sprintf("EX%d", pm.Exchange)
+				
+				err := WriteTrade(writeCtx, pm.Symbol, pm.Price, pm.Size, exchangeStr, time.UnixMilli(pm.Timestamp))
+				if err != nil {
+					log.Printf("❌ Failed to write trade to DB: %v", err)
+				}
+			}
+		}
+	}()
+	
 	// Broadcast to all subscribed clients
 	broadcastMessage(msg)
 	
-	// Optionally publish to Redis for other services
+	// Publish to Redis for other services
 	if redisClient != nil {
 		data, err := json.Marshal(msg)
 		if err == nil {
