@@ -115,6 +115,15 @@ func main() {
 	}
 	defer CloseDatabase()
 	
+	// Initialize DragonflyDB
+	if err := InitDragonfly(); err != nil {
+		log.Printf("⚠️  DragonflyDB initialization failed: %v (continuing without cache)", err)
+		log.Println("⚠️  Continuing without hot data cache - performance may be affected")
+	} else {
+		defer CloseDragonfly()
+		log.Println("✅ DragonflyDB cache layer active - hot data queries will be 10-100x faster")
+	}
+	
 	// Initialize Polygon client
 	initPolygon()
 
@@ -619,7 +628,79 @@ func handlePolygonMessage(pm PolygonMessage) {
 	// Transform Polygon message to our format
 	msg := TransformPolygonMessage(pm)
 	
-	// Write to TimescaleDB (async, non-blocking)
+	// ================================================
+	// DUAL-WRITE PATTERN: DragonflyDB + TimescaleDB
+	// ================================================
+	
+	// 1. Write to DragonflyDB (cache - hot data, fast)
+	go func() {
+		if IsCacheReady() && pm.Symbol != "" {
+			// Cache trade data
+			if pm.EventType == "T" && pm.Price > 0 {
+				// Cache latest price
+				if err := CachePrice(pm.Symbol, pm.Price); err != nil {
+					log.Printf("⚠️  Failed to cache price for %s: %v", pm.Symbol, err)
+				}
+				
+				// Cache trade data for quick lookups
+				tradeData := map[string]interface{}{
+					"price":     pm.Price,
+					"size":      pm.Size,
+					"timestamp": pm.Timestamp,
+					"exchange":  pm.Exchange,
+				}
+				if err := CacheTrade(pm.Symbol, tradeData); err != nil {
+					log.Printf("⚠️  Failed to cache trade for %s: %v", pm.Symbol, err)
+				}
+				
+				// Cache options flow if this is options data
+				if pm.Size > 0 {
+					flowData := map[string]interface{}{
+						"time":      pm.Timestamp,
+						"price":     pm.Price,
+						"size":      pm.Size,
+						"exchange":  pm.Exchange,
+						"symbol":    pm.Symbol,
+					}
+					if err := CacheFlow(pm.Symbol, flowData); err != nil {
+						log.Printf("⚠️  Failed to cache flow for %s: %v", pm.Symbol, err)
+					}
+				}
+			}
+			
+			// Cache quote data
+			if pm.EventType == "Q" {
+				quoteData := map[string]interface{}{
+					"bid_price":  pm.BidPrice,
+					"bid_size":   pm.BidSize,
+					"ask_price":  pm.AskPrice,
+					"ask_size":   pm.AskSize,
+					"timestamp":  pm.Timestamp,
+				}
+				if err := CacheQuote(pm.Symbol, quoteData); err != nil {
+					log.Printf("⚠️  Failed to cache quote for %s: %v", pm.Symbol, err)
+				}
+			}
+			
+			// Cache aggregate data (candles)
+			if pm.EventType == "A" || pm.EventType == "AM" {
+				aggData := map[string]interface{}{
+					"open":       pm.Open,
+					"high":       pm.High,
+					"low":        pm.Low,
+					"close":      pm.Close,
+					"volume":     pm.Volume,
+					"vwap":       pm.VWAP,
+					"timestamp":  pm.Timestamp,
+				}
+				if err := CacheAggregate(pm.Symbol, aggData); err != nil {
+					log.Printf("⚠️  Failed to cache aggregate for %s: %v", pm.Symbol, err)
+				}
+			}
+		}
+	}()
+	
+	// 2. Write to TimescaleDB (persistent storage - all data, durable)
 	go func() {
 		if db != nil {
 			writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -627,21 +708,36 @@ func handlePolygonMessage(pm PolygonMessage) {
 			
 			// Write trade data to TimescaleDB
 			if pm.EventType == "T" && pm.Symbol != "" && pm.Price > 0 {
-				// Convert exchange ID to string
 				exchangeStr := fmt.Sprintf("EX%d", pm.Exchange)
-				
 				err := WriteTrade(writeCtx, pm.Symbol, pm.Price, pm.Size, exchangeStr, time.UnixMilli(pm.Timestamp))
 				if err != nil {
-					log.Printf("❌ Failed to write trade to DB: %v", err)
+					log.Printf("❌ Failed to write trade to TimescaleDB: %v", err)
+				}
+			}
+			
+			// Write quote data to TimescaleDB
+			if pm.EventType == "Q" && pm.Symbol != "" {
+				exchangeStr := fmt.Sprintf("EX%d", pm.Exchange)
+				err := WriteQuote(writeCtx, pm.Symbol, pm.BidPrice, pm.AskPrice, pm.BidSize, pm.AskSize, exchangeStr, time.UnixMilli(pm.Timestamp))
+				if err != nil {
+					log.Printf("❌ Failed to write quote to TimescaleDB: %v", err)
+				}
+			}
+			
+			// Write aggregate data to TimescaleDB
+			if (pm.EventType == "A" || pm.EventType == "AM") && pm.Symbol != "" {
+				err := WriteAggregate(writeCtx, pm.Symbol, pm.Open, pm.High, pm.Low, pm.Close, pm.VWAP, pm.Volume, pm.TradeCount, time.UnixMilli(pm.Timestamp))
+				if err != nil {
+					log.Printf("❌ Failed to write aggregate to TimescaleDB: %v", err)
 				}
 			}
 		}
 	}()
 	
-	// Broadcast to all subscribed clients
+	// 3. Broadcast to all subscribed clients (real-time)
 	broadcastMessage(msg)
 	
-	// Publish to Redis for other services
+	// 4. Publish to Redis for other services
 	if redisClient != nil {
 		data, err := json.Marshal(msg)
 		if err == nil {
