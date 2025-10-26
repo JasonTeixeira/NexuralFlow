@@ -130,7 +130,8 @@ func main() {
 	// Start background services
 	go handleMessages()
 	go startHeartbeat()
-	go startRedisSubscriber()
+	// Redis pub/sub disabled - using DragonflyDB for caching only
+	// go startRedisSubscriber()
 	go cleanupStaleConnections()
 
 	// Setup HTTP routes
