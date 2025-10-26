@@ -24,14 +24,27 @@ import (
 
 // PolygonMessage represents a message from Polygon
 type PolygonMessage struct {
-	EventType string          `json:"ev"`
-	Symbol    string          `json:"sym"`
-	Price     float64         `json:"p"`
-	Size      int             `json:"s"`
-	Exchange  int             `json:"x"`
-	Timestamp int64           `json:"t"`
-	Conditions []int          `json:"c"`
-	Raw       json.RawMessage `json:"-"`
+	EventType  string          `json:"ev"`
+	Symbol     string          `json:"sym"`
+	// Trade fields
+	Price      float64         `json:"p"`
+	Size       int             `json:"s"`
+	Exchange   int             `json:"x"`
+	Timestamp  int64           `json:"t"`
+	Conditions interface{}     `json:"c"` // Can be int or []int
+	// Quote fields
+	BidPrice   float64         `json:"bp"`
+	BidSize    int             `json:"bs"`
+	AskPrice   float64         `json:"ap"`
+	AskSize    int             `json:"as"`
+	// Aggregate fields
+	Open       float64         `json:"o"`
+	High       float64         `json:"h"`
+	Low        float64         `json:"l"`
+	Close      float64         `json:"c"`
+	Volume     int64           `json:"v"`
+	VWAP       float64         `json:"vw"`
+	Raw        json.RawMessage `json:"-"`
 }
 
 // PolygonStatusMessage represents a status message
