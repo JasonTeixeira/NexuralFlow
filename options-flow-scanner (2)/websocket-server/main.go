@@ -726,7 +726,7 @@ func handlePolygonMessage(pm PolygonMessage) {
 			
 			// Write aggregate data to TimescaleDB
 			if (pm.EventType == "A" || pm.EventType == "AM") && pm.Symbol != "" {
-				err := WriteAggregate(writeCtx, pm.Symbol, pm.Open, pm.High, pm.Low, pm.Close, pm.VWAP, pm.Volume, pm.TradeCount, time.UnixMilli(pm.Timestamp))
+				err := WriteAggregate(writeCtx, pm.Symbol, pm.Open, pm.High, pm.Low, pm.Close, pm.VWAP, pm.Volume, int(pm.TradeCount), time.UnixMilli(pm.Timestamp))
 				if err != nil {
 					log.Printf("❌ Failed to write aggregate to TimescaleDB: %v", err)
 				}

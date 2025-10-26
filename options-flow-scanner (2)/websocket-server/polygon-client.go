@@ -44,6 +44,7 @@ type PolygonMessage struct {
 	Close      float64         `json:"c"`
 	Volume     int64           `json:"v"`
 	VWAP       float64         `json:"vw"`
+	TradeCount int64           `json:"n"`
 	Raw        json.RawMessage `json:"-"`
 }
 
